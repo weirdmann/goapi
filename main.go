@@ -40,7 +40,7 @@ func TcpListen() {
 		go handleClient(conn)
 	}
 }
-
+// function to update the timeout of blahblah
 func UpdateTimeout[C net.Conn](conn C) {
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 }
@@ -49,6 +49,8 @@ func handleClient(conn net.Conn) {
 
 	UpdateTimeout(conn)
 	defer conn.Close()
+  
+  
 
 	// Create a buffer to read data into
 	buffer := make([]byte, 1024)

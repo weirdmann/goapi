@@ -96,3 +96,5 @@ type TelegramHandler interface {
 	exec(*Pipeline)
 	set_next(*TelegramHandler)
 }
+
+
