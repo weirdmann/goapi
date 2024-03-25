@@ -5,6 +5,19 @@ import (
 	"time"
 )
 
+/*
+
+	telegram received
+	parse
+
+	SCN:
+		find container
+		and its task
+		respond with appropriate direction // direction might be based on some logic other than node directions
+		notify any observers
+
+*/
+
 type TransportConnection struct {
 	addr  string
 	nodes map[string]*TransportNode
@@ -22,6 +35,7 @@ type TransportTask struct {
 	date_modified     time.Time
 	status            string
 	container_barcode string
+	container         *Container
 	destination       string
 }
 
@@ -41,6 +55,10 @@ type LSTelegram struct {
 	reserve           string
 }
 
+type Pipeline struct {
+	container *Container
+}
+
 type Telegram struct {
 	raw_input         string
 	date_received     time.Time
@@ -48,4 +66,13 @@ type Telegram struct {
 	date_responded    time.Time
 	response_builder  strings.Builder
 	related_container *Container
+}
+
+type TelegramHandler interface {
+	exec(*Telegram)
+	next(*TelegramHandler)
+}
+
+type FindContainer struct {
+	next TelegramHandler
 }
