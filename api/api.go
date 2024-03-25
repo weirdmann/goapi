@@ -10,12 +10,33 @@ import (
 	telegram received
 	parse
 
-	SCN:
-		find container
-		and its task
+	SCN - Scan:
+		respond with SCNA
+		find container and its task
 		respond with appropriate direction // direction might be based on some logic other than node directions
+			chain of responsibility with an appropriate priority
+			a link in the chain might decide the final direction and break the
+			execution with an "early return"
 		notify any observers
+			observer pattern:
+				- task status update
+				- container spotted info
+				- eventual error information
 
+	SOK - Transport confirmed:
+		respond with SOKA
+		find container and its task
+		notify any observers:
+			- task status update
+			- error if container unknown
+	SER - Transport error
+		respond with SERA
+		find container and its task
+		notify any observers:
+			- log error cause (2 - location busy, 3 - CMD timeout)
+			- TODO - update location status
+	CMDA - Command received
+		verbose log
 */
 
 type TransportConnection struct {
@@ -45,6 +66,7 @@ type Container struct {
 }
 
 type LSTelegram struct {
+	timestamp         time.Time
 	raw               string
 	transport_node_id string
 	telegram_type     string
@@ -56,7 +78,9 @@ type LSTelegram struct {
 }
 
 type Pipeline struct {
+	node      *TransportNode
 	container *Container
+	response  *LSTelegram
 }
 
 type Telegram struct {
@@ -69,10 +93,6 @@ type Telegram struct {
 }
 
 type TelegramHandler interface {
-	exec(*Telegram)
-	next(*TelegramHandler)
-}
-
-type FindContainer struct {
-	next TelegramHandler
+	exec(*Pipeline)
+	set_next(*TelegramHandler)
 }
