@@ -12,15 +12,22 @@ import (
 
 func main() {
 	fmt.Println("Hello, Cloo!")
-
-	//TcpListen()
+	TcpListen()
 
 }
 
 type TcpPeer struct {
   id  guid.Guid
+  conn *net.Conn
   recv_chan chan []byte
   send_chan chan []byte
+}
+
+func NewTcpPeer (conn *net.Conn) (*TcpPeer, error) {
+  n := &TcpPeer{id : *guid.New(), conn : conn}
+
+  return n, nil
+
 }
 
 func TcpListen() {
@@ -54,6 +61,13 @@ func UpdateTimeout[C net.Conn](conn C) {
 
 func handleClient(conn net.Conn) {
 
+  tp, err := NewTcpPeer(&conn)
+  if err != nil {
+    fmt.Println("Error creating a TCP Peer")
+    panic(0)
+  }
+
+  fmt.Println(tp.id.String())
 	UpdateTimeout(conn)
 	defer conn.Close()
   
