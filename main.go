@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"time"
+  "github.com/beevik/guid" 
 )
 
 func main() {
@@ -14,6 +15,12 @@ func main() {
 
 	//TcpListen()
 
+}
+
+type TcpPeer struct {
+  id  guid.Guid
+  recv_chan chan []byte
+  send_chan chan []byte
 }
 
 func TcpListen() {
