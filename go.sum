@@ -1,2 +1,4 @@
 github.com/beevik/guid v1.0.0 h1:XhTlrl9h5+TlkB7MB3SBwAm2+ZdFE62O0D+g7LDFqqI=
 github.com/beevik/guid v1.0.0/go.mod h1:FyB4y08P/8c0J0xhRHR6xVjdXIpGDwpMXzmGV6vWDj4=
+github.com/weirdmann/go-graceful-shutdown v0.0.0-20240329111631-19f833b45da6 h1:ffVdL+8LO4qQwmyQ6FrqP7wRJlpm+pBW9AjZi0X8/n4=
+github.com/weirdmann/go-graceful-shutdown v0.0.0-20240329111631-19f833b45da6/go.mod h1:TaoPnjcfxxs3F69BZfIfiL6uOTB7xarZTF2lC0siupI=

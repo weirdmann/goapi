@@ -1,4 +1,4 @@
-package graceful_shutdown
+package internal
 
 import (
 "os"
