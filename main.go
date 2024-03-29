@@ -1,6 +1,7 @@
 package main
 
 import (
+  "github.com/weirdmann/golang_tcp/GracefulShutdown"
 	"context"
 	"errors"
 	"fmt"
@@ -28,9 +29,12 @@ func main() {
 		time.Sleep(10 * time.Second)
 		cancel()
 	}()
+  fmt.Println("Waiting...")
+  go GracefulShutdown(cancel)
 	main_WG.Wait()
 
 }
+
 
 /*
 
@@ -141,6 +145,7 @@ func NewTcpEndpoint(ipAddr string, port uint16, ctx *context.Context) *TcpEndpoi
 func (this *TcpEndpoint) ListenerStop() {
 	select {
 	case <-(*this.ctx).Done():
+    fmt.Printf("Stopping TCP Listener %s", this.listener.Addr())
 		this.listener.Close()
 	}
 
