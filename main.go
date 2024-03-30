@@ -1,5 +1,12 @@
 package main
+/*
 
+TODO: There is some error with the Dialer locking the graceful shutdown
+when it has some leftover values in the send channel but 
+it didn't establish the connection...
+Look into it.
+
+*/
 import (
 	"context"
 	"errors"
@@ -41,21 +48,18 @@ func main() {
 		for {
 			select {
 			case r := <-*recv_chan:
-				log.Printf("[INFO] Received: %s", r)
+				//log.Printf("[INFO] Received: %s", r)
 				str := string(r[:])
 				str = strings.TrimSpace(str)
-				if str == "RESET" {
-					tcp.ListenerSoftReset()
-				}
 				*send_chan <- r
 			case <-tcp_context.Done():
 				return
 			}
 		}
 	}
-	wg.Add(2)
-	go handle(&recv, &send)
-	go handle(&rd, &sd)
+	wg.Add(1)
+	go handle(&recv, &sd)
+	//go handle(&recv, &sd)
 	wg.Wait()
 }
 
@@ -227,8 +231,6 @@ func NewTcpPeer(conn net.Conn, logger *log.Logger) (*TcpPeer, error) {
 }
 
 func (this *TcpPeer) Close() {
-	close(this.recv_chan)
-	close(this.send_chan)
 	this.Conn.Close()
 }
 
@@ -250,7 +252,6 @@ func (this *TcpPeer) Receive(on_disconnect func()) *chan []byte {
 			n, err := this.Conn.Read(buffer)
 
 			if errors.Is(err, os.ErrDeadlineExceeded) {
-				UpdateTimeout(this.Conn, 5)
 				continue
 			}
 			if errors.Is(err, io.EOF) {
@@ -268,7 +269,6 @@ func (this *TcpPeer) Receive(on_disconnect func()) *chan []byte {
 				return
 			}
 			this.recv_chan <- buffer[:n]
-			UpdateTimeout(this.Conn, 5)
 		}
 	}()
 	go this.Send()
