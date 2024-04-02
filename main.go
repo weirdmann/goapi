@@ -11,7 +11,6 @@ Look into it.
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -31,17 +30,17 @@ var wg sync.WaitGroup
 func main() {
 	logger := log.Default()
 	logger.Println("Starting...")
-	tcp_context, cancel := context.WithCancel(context.Background())
+	main_context, cancel := context.WithCancel(context.Background())
 	go gs.GracefulShutdown(logger, cancel)
 
-	tcp := NewTcpEndpoint("0.0.0.0", 2137, &tcp_context, logger)
+	tcp := NewTcpEndpoint("0.0.0.0", 2137, &main_context, logger)
 	recv_from_listener := make(chan []byte)
 	recv_from_dialer := make(chan []byte)
-	send_to_listener, _ := tcp.Listen(&recv_from_listener)
-	tcp_d := NewTcpEndpoint("127.0.0.1", 2139, &tcp_context, logger)
-  send_to_dialer, _ := tcp_d.Dial(&recv_from_dialer)
+	send_to_listener, _ := tcp.Listen(main_context, "0.0.0.0:2137", &recv_from_listener)
+	tcp_d := NewTcpEndpoint("127.0.0.1", 2139, &main_context, logger)
+	send_to_dialer, _ := tcp_d.Dial(main_context, "0.0.0.0:2138", &recv_from_dialer)
 
-	handle := func(recv_chan *chan []byte, send_chan *chan []byte) {
+	handle := func(ctx context.Context, recv_chan *chan []byte, send_chan *chan []byte) {
 		defer wg.Done()
 		if recv_chan == nil || send_chan == nil {
 			return
@@ -59,74 +58,64 @@ func main() {
 				str := string(r[:])
 				str = strings.TrimSpace(str)
 				*send_chan <- r
-			case <-tcp_context.Done():
-				return
+			case <-ctx.Done():
+				//time.Sleep(time.Second)
+				stop = true
+				break
 			}
 		}
 		close(*send_chan)
 	}
 	wg.Add(2)
-	go handle(&recv_from_listener, send_to_listener)
-	go handle(&recv_from_dialer, send_to_dialer)
+	go handle(main_context, &recv_from_listener, send_to_listener)
+	go handle(main_context, &recv_from_dialer, send_to_dialer)
 	wg.Wait()
 }
 
 // ---- Tcp Endpoint ---- //
 
 type TcpEndpoint struct {
-	Guid          guid.Guid
-	ctx           *context.Context
-	config_IPAddr net.IP
-	config_Port   uint16
-	conn          net.Conn
-	listener      net.Listener
-	dialer        net.Dialer
-	logger        *log.Logger
-	peers         map[string]*TcpPeer
-	recv_chan     *chan []byte
-	send_chan     chan []byte
+	Guid      guid.Guid
+	listener  net.Listener
+	dialer    net.Dialer
+	logger    *log.Logger
+	peers     map[string]*TcpPeer
+	recv_chan *chan []byte
+	send_chan chan []byte
 }
 
 func NewTcpEndpoint(ipAddr string, port uint16, ctx *context.Context, logger *log.Logger) *TcpEndpoint {
 	return &TcpEndpoint{
-		ctx:           ctx,
-		Guid:          *guid.New(),
-		config_IPAddr: net.ParseIP(ipAddr),
-		config_Port:   port,
-		logger:        logger,
-		peers:         make(map[string]*TcpPeer),
+		Guid:   *guid.New(),
+		logger: logger,
+		peers:  make(map[string]*TcpPeer),
 	}
 }
 
-// func (this *TcpEndpoint) ListenerSoftReset() {
-// 	this.listener.Close()
-// 	for _, tcpPeer := range this.peers {
-// 	tcpPeer.Close()
-// 	}
-// this.Listen(this.recv_chan, this.send_chan)
-// }
+func (this *TcpEndpoint) log(s string, a ...any) {
+  a = append([]any{this.Guid.String()[:4]}, a)
+	this.logger.Printf("%s | " + s, a...)
+}
 
-func (this *TcpEndpoint) ListenerStop() {
+func (this *TcpEndpoint) ListenerStop(ctx context.Context) {
 	select {
-	case <-(*this.ctx).Done():
-		this.logger.Printf("Stopping TCP Listener %s", this.listener.Addr())
+	case <-(ctx).Done():
+		this.log("Stopping TCP Listener %s", this.listener.Addr())
 		for _, tcpPeer := range this.peers {
 			tcpPeer.Close()
 		}
 		this.listener.Close()
-		close(*this.recv_chan)
 	}
 }
 
-func (this *TcpEndpoint) DialerStop() {
+func (this *TcpEndpoint) DialerStop(ctx context.Context) {
 	select {
-
-	case <-(*this.ctx).Done():
+	case <-(ctx).Done():
 		this.logger.Printf("Stopping TCP Dialer: %s", this.dialer.LocalAddr)
 		for _, tcpPeer := range this.peers {
 			tcpPeer.Close()
 		}
-		close(*this.recv_chan)
+		//	close(*this.recv_chan)
 	}
 }
 
@@ -134,44 +123,23 @@ func (this *TcpEndpoint) DialerStop() {
 // Listen should not be started as a goroutine
 // but start its own goroutine and return a channel that
 // will receive the packets
-func (this *TcpEndpoint) Listen(chan_for_received_data *chan []byte) (*chan []byte, error) {
+func (this *TcpEndpoint) Listen(ctx context.Context, addr string, chan_for_received_data *chan []byte) (*chan []byte, error) {
 	this.recv_chan = chan_for_received_data
 	this.send_chan = make(chan []byte, 64)
 
 	var err error
 
-	this.listener, err = net.Listen("tcp4", fmt.Sprintf("%s:%d", this.config_IPAddr.String(), this.config_Port))
+	this.listener, err = net.Listen("tcp4", addr)
 	if err != nil {
 		this.logger.Println(err)
 		close(*this.recv_chan)
 		return &this.send_chan, err
 	}
 
-	go this.ListenerStop()
-	go func() {
-		for {
-			// Accept incoming connections
-			conn, err := this.listener.Accept()
-			if errors.Is(err, net.ErrClosed) {
-				return
-			}
-			if err != nil {
-				this.logger.Println("Error:", err)
-				return
-			}
+	connectionContext, connectionCancel := context.WithCancel(ctx)
+	go this.ListenerStop(connectionContext)
+	go this.accept(connectionContext)
 
-			tcpPeer, _ := NewTcpPeer(conn, this.logger)
-			this.peers[tcpPeer.Id.String()] = tcpPeer
-			// Handle client connection in a goroutine
-			this.logger.Printf("New TCP Peer connected: %s", tcpPeer.Conn.RemoteAddr())
-			tp_recv_chan := tcpPeer.Receive(func() { delete(this.peers, tcpPeer.Id.String()) })
-			go func() {
-				for received := range *tp_recv_chan {
-					*this.recv_chan <- received
-				}
-			}()
-		}
-	}()
 	// Sender coroutine - spread the sent data between all peers
 	go func() {
 		for to_send := range this.send_chan {
@@ -179,37 +147,89 @@ func (this *TcpEndpoint) Listen(chan_for_received_data *chan []byte) (*chan []by
 				peer.send_chan <- to_send
 			}
 		}
-    this.ListenerStop()
+		this.logger.Printf("%s x-  | Send channel closed, stopping TCP Listener", this.listener.Addr())
+		// cancel the stop handler coroutine so it doesn't try to close a closed recv_chan
+		connectionCancel()
 	}()
 	return &this.send_chan, nil
 }
 
-func (this *TcpEndpoint) Dial(chan_for_received_data *chan []byte) (*chan []byte, error) {
+func (this *TcpEndpoint) accept(ctx context.Context) {
+	for {
+		// Accept incoming connections
+		conn, err := this.listener.Accept()
+		if errors.Is(err, net.ErrClosed) {
+      this.log("%s > Goroutine this.accept: Connection closed", this.listener.Addr().String())
+			return
+		}
+		if err != nil {
+      this.logger.Printf("%s > Goroutine this.accept: Error: %q",  this.listener.Addr().String(), err)
+			return
+		}
+
+		tcpPeer, _ := NewTcpPeer(conn, this.logger)
+		this.peers[tcpPeer.Id.String()] = tcpPeer
+		// Handle client connection in a goroutine
+    this.logger.Printf("%s <- %s | New TCP Peer connected", this.listener.Addr().String(), tcpPeer.Conn.RemoteAddr().String())
+	  tcpPeer.Receive(func() { delete(this.peers, tcpPeer.Id.String()) })
+
+		go func(ctx context.Context, tcpPeer *TcpPeer) {
+			for {
+				select {
+				case received, ok := <-tcpPeer.recv_chan:
+          if !ok {
+            this.logger.Printf("%s <- %s | Recv_chan closed, closing the fan-in func", this.listener.Addr().String(), tcpPeer.Conn.RemoteAddr().String())
+            return
+          }
+					*this.recv_chan <- received
+				case <-ctx.Done():
+          this.logger.Printf("%s <- %s | Context cancelled, closing the fan-in func", this.listener.Addr().String(), tcpPeer.Conn.RemoteAddr().String())
+					return
+				}
+			}
+		}(ctx, tcpPeer)
+	}
+}
+
+func (this *TcpEndpoint) Dial(ctx context.Context, addr string, chan_for_received_data *chan []byte) (*chan []byte, error) {
 	this.recv_chan = chan_for_received_data
 	this.send_chan = make(chan []byte, 64)
-	go this.DialerStop()
 
-	addr := fmt.Sprintf("%s:%d", this.config_IPAddr, this.config_Port)
+	connectionContext, connectionCancel := context.WithCancel(ctx)
+	go this.DialerStop(connectionContext)
+
 	var conn net.Conn
 	this.dialer.Deadline.Add(5 * time.Second)
-	conn, err := this.dialer.DialContext(*this.ctx, "tcp4", addr)
+	conn, err := this.dialer.DialContext(ctx, "tcp4", addr)
 
 	if err != nil {
-		this.logger.Printf("TCP Client connection attempt failed for %s, %s", addr, err)
+    this.logger.Printf(" >x %s | TCP Client connection attempt failed for: %q", addr, err)
+		// cancel the stop handler coroutine so it doesn't try to close a closed recv_chan
+		connectionCancel()
 		close(*this.recv_chan)
 		return &this.send_chan, err
 	}
 
-	this.logger.Printf("TCP Client connected to %s", conn.RemoteAddr())
+	this.logger.Printf("%s -> %s | TCP Dialer connected", conn.LocalAddr().String(), conn.RemoteAddr().String())
 
 	tcpPeer, _ := NewTcpPeer(conn, this.logger)
 	this.peers[tcpPeer.Id.String()] = tcpPeer
-	tp_recv_chan := tcpPeer.Receive(func() { delete(this.peers, tcpPeer.Id.String()) })
-	go func() {
-		for received := range *tp_recv_chan {
-			*this.recv_chan <- received
-		}
-	}()
+	tcpPeer.Receive(func() { delete(this.peers, tcpPeer.Id.String()) })
+  go func(ctx context.Context, tcpPeer *TcpPeer) {
+    for {
+      select {
+      case received, ok := <-tcpPeer.recv_chan:
+        if !ok {
+          this.logger.Printf(" -> %s | Recv_chan closed, closing the fan-in func", tcpPeer.Conn.RemoteAddr().String())
+          return
+        }
+        *this.recv_chan <- received
+      case <-ctx.Done():
+        this.logger.Printf(" -> %s | Context cancelled, closing the fan-in func", tcpPeer.Conn.RemoteAddr().String())
+        return
+      }
+    }
+  }(connectionContext, tcpPeer)
 	// Sender coroutine - spread the sent data between all peers
 	go func() {
 		for to_send := range this.send_chan {
@@ -217,6 +237,9 @@ func (this *TcpEndpoint) Dial(chan_for_received_data *chan []byte) (*chan []byte
 				peer.send_chan <- to_send
 			}
 		}
+		this.logger.Printf(" x> %s | Send channel closed, stopping TCP Dialer", addr)
+		// cancel the stop handler coroutine so it doesn't try to close a closed recv_chan
+		connectionCancel()
 	}()
 	return &this.send_chan, nil
 }
@@ -247,6 +270,8 @@ func NewTcpPeer(conn net.Conn, logger *log.Logger) (*TcpPeer, error) {
 
 func (this *TcpPeer) Close() {
 	this.Conn.Close()
+  close(this.send_chan)
+  close(this.recv_chan)
 }
 
 func (this *TcpPeer) GetConn() net.Conn {
@@ -270,7 +295,7 @@ func (this *TcpPeer) Receive(on_disconnect func()) *chan []byte {
 				continue
 			}
 			if errors.Is(err, io.EOF) {
-				this.logger.Printf("[INFO] Client disconnected: %s\n", this.Conn.RemoteAddr())
+				this.logger.Printf("%s <x %s | Client disconnected", this.Conn.LocalAddr(), this.Conn.RemoteAddr())
 				this.Close()
 				on_disconnect()
 				return
@@ -280,7 +305,7 @@ func (this *TcpPeer) Receive(on_disconnect func()) *chan []byte {
 				return
 			}
 			if err != nil {
-				this.logger.Println("[ERRR] Error:", err)
+				this.logger.Printf("%s ?? %s | [ERRR] Error: %s", this.Conn.LocalAddr(), this.Conn.RemoteAddr(), err)
 				return
 			}
 			this.recv_chan <- buffer[:n]
