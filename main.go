@@ -1,8 +1,9 @@
 package main
+
 /*
 
 TODO: There is some error with the Dialer locking the graceful shutdown
-when it has some leftover values in the send channel but 
+when it has some leftover values in the send channel but
 it didn't establish the connection...
 Look into it.
 
@@ -34,20 +35,26 @@ func main() {
 	go gs.GracefulShutdown(logger, cancel)
 
 	tcp := NewTcpEndpoint("0.0.0.0", 2137, &tcp_context, logger)
-	recv, send := make(chan []byte), make(chan []byte)
-	rd, sd := make(chan []byte), make(chan []byte)
-	tcp.Listen(&recv, &send)
+	recv_from_listener := make(chan []byte)
+	recv_from_dialer := make(chan []byte)
+	send_to_listener, _ := tcp.Listen(&recv_from_listener)
 	tcp_d := NewTcpEndpoint("127.0.0.1", 2139, &tcp_context, logger)
-	tcp_d.Dial(&rd, &sd)
+  send_to_dialer, _ := tcp_d.Dial(&recv_from_dialer)
 
 	handle := func(recv_chan *chan []byte, send_chan *chan []byte) {
 		defer wg.Done()
 		if recv_chan == nil || send_chan == nil {
 			return
 		}
-		for {
+		stop := false
+		for !stop {
 			select {
-			case r := <-*recv_chan:
+			case r, ok := <-*recv_chan:
+				if !ok {
+					log.Println("Endpoint closed the recv_chan, exiting...")
+					stop = true
+					break
+				}
 				//log.Printf("[INFO] Received: %s", r)
 				str := string(r[:])
 				str = strings.TrimSpace(str)
@@ -56,10 +63,11 @@ func main() {
 				return
 			}
 		}
+		close(*send_chan)
 	}
-	wg.Add(1)
-	go handle(&recv, &sd)
-	//go handle(&recv, &sd)
+	wg.Add(2)
+	go handle(&recv_from_listener, send_to_listener)
+	go handle(&recv_from_dialer, send_to_dialer)
 	wg.Wait()
 }
 
@@ -76,7 +84,7 @@ type TcpEndpoint struct {
 	logger        *log.Logger
 	peers         map[string]*TcpPeer
 	recv_chan     *chan []byte
-	send_chan     *chan []byte
+	send_chan     chan []byte
 }
 
 func NewTcpEndpoint(ipAddr string, port uint16, ctx *context.Context, logger *log.Logger) *TcpEndpoint {
@@ -90,13 +98,13 @@ func NewTcpEndpoint(ipAddr string, port uint16, ctx *context.Context, logger *lo
 	}
 }
 
-func (this *TcpEndpoint) ListenerSoftReset() {
-	this.listener.Close()
-	for _, tcpPeer := range this.peers {
-		tcpPeer.Close()
-	}
-	this.Listen(this.recv_chan, this.send_chan)
-}
+// func (this *TcpEndpoint) ListenerSoftReset() {
+// 	this.listener.Close()
+// 	for _, tcpPeer := range this.peers {
+// 	tcpPeer.Close()
+// 	}
+// this.Listen(this.recv_chan, this.send_chan)
+// }
 
 func (this *TcpEndpoint) ListenerStop() {
 	select {
@@ -106,6 +114,7 @@ func (this *TcpEndpoint) ListenerStop() {
 			tcpPeer.Close()
 		}
 		this.listener.Close()
+		close(*this.recv_chan)
 	}
 }
 
@@ -117,6 +126,7 @@ func (this *TcpEndpoint) DialerStop() {
 		for _, tcpPeer := range this.peers {
 			tcpPeer.Close()
 		}
+		close(*this.recv_chan)
 	}
 }
 
@@ -124,16 +134,17 @@ func (this *TcpEndpoint) DialerStop() {
 // Listen should not be started as a goroutine
 // but start its own goroutine and return a channel that
 // will receive the packets
-func (this *TcpEndpoint) Listen(chan_for_received_data *chan []byte, chan_for_data_to_send *chan []byte) {
+func (this *TcpEndpoint) Listen(chan_for_received_data *chan []byte) (*chan []byte, error) {
 	this.recv_chan = chan_for_received_data
-	this.send_chan = chan_for_data_to_send
+	this.send_chan = make(chan []byte, 64)
 
 	var err error
 
 	this.listener, err = net.Listen("tcp4", fmt.Sprintf("%s:%d", this.config_IPAddr.String(), this.config_Port))
 	if err != nil {
 		this.logger.Println(err)
-		return
+		close(*this.recv_chan)
+		return &this.send_chan, err
 	}
 
 	go this.ListenerStop()
@@ -163,17 +174,19 @@ func (this *TcpEndpoint) Listen(chan_for_received_data *chan []byte, chan_for_da
 	}()
 	// Sender coroutine - spread the sent data between all peers
 	go func() {
-		for to_send := range *this.send_chan {
+		for to_send := range this.send_chan {
 			for _, peer := range this.peers {
 				peer.send_chan <- to_send
 			}
 		}
+    this.ListenerStop()
 	}()
+	return &this.send_chan, nil
 }
 
-func (this *TcpEndpoint) Dial(chan_for_received_data *chan []byte, chan_for_data_to_send *chan []byte) {
+func (this *TcpEndpoint) Dial(chan_for_received_data *chan []byte) (*chan []byte, error) {
 	this.recv_chan = chan_for_received_data
-	this.send_chan = chan_for_data_to_send
+	this.send_chan = make(chan []byte, 64)
 	go this.DialerStop()
 
 	addr := fmt.Sprintf("%s:%d", this.config_IPAddr, this.config_Port)
@@ -183,7 +196,8 @@ func (this *TcpEndpoint) Dial(chan_for_received_data *chan []byte, chan_for_data
 
 	if err != nil {
 		this.logger.Printf("TCP Client connection attempt failed for %s, %s", addr, err)
-		return
+		close(*this.recv_chan)
+		return &this.send_chan, err
 	}
 
 	this.logger.Printf("TCP Client connected to %s", conn.RemoteAddr())
@@ -198,12 +212,13 @@ func (this *TcpEndpoint) Dial(chan_for_received_data *chan []byte, chan_for_data
 	}()
 	// Sender coroutine - spread the sent data between all peers
 	go func() {
-		for to_send := range *this.send_chan {
+		for to_send := range this.send_chan {
 			for _, peer := range this.peers {
 				peer.send_chan <- to_send
 			}
 		}
 	}()
+	return &this.send_chan, nil
 }
 
 // --------------------- //
