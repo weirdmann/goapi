@@ -1,28 +1,13 @@
 package main
-
-/*
-
-TODO: There is some error with the Dialer locking the graceful shutdown
-when it has some leftover values in the send channel but
-it didn't establish the connection...
-Look into it.
-
-*/
 import (
 	"context"
-	"errors"
-	"io"
 	"log"
-	"net"
-	"os"
 	"sync"
-	"time"
 
 	"strings"
 
 	gs "github.com/weirdmann/go-graceful-shutdown"
-
-	"github.com/beevik/guid"
+  tcp "github.com/weirdmann/teasipper"
 )
 
 var wg sync.WaitGroup
@@ -33,12 +18,12 @@ func main() {
 	main_context, cancel := context.WithCancel(context.Background())
 	go gs.GracefulShutdown(logger, cancel)
 
-	tcp := NewEndpoint("0.0.0.0", 2137, &main_context, logger)
-	tcp_d := NewEndpoint("127.0.0.1", 2139, &main_context, logger)
+	tcp_l := tcp.NewEndpoint(logger)
+	tcp_d := tcp.NewEndpoint(logger)
 
 	send_to_listener := make(chan []byte)
 	send_to_dialer := make(chan []byte)
-	recv_from_listener, _ := tcp.Listen(main_context, "0.0.0.0:2137", &send_to_listener)
+	recv_from_listener, _ := tcp_l.Listen(main_context, "0.0.0.0:2137", &send_to_listener)
 	recv_from_dialer, _ := tcp_d.Dial(main_context, "0.0.0.0:2138", &send_to_dialer)
 
 	handle := func(ctx context.Context, recv_chan *chan []byte, send_chan *chan []byte) {
@@ -73,7 +58,7 @@ func main() {
 	go handle(main_context, recv_from_dialer, &send_to_dialer)
 	wg.Wait()
 }
-
+/*
 // ---- Tcp Endpoint ---- //
 
 type Endpoint struct {
@@ -330,3 +315,4 @@ func (this *Peer) Receive(on_disconnect func()) *chan []byte {
 func UpdateTimeout[C net.Conn](conn C, seconds int) {
 	conn.SetDeadline(time.Now().Add(time.Second * time.Duration(seconds)))
 }
+*/
